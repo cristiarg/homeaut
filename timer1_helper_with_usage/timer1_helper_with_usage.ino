@@ -198,8 +198,6 @@ void example_fire_one_channel_with_small_delay_nested_into_larger_delay_of_the_o
         Serial.print("end A ");
         Serial.println(millis());
 
-        timer1.resetB();
-
         const int8_t err_code = timer1.scheduleBOnce(1100, []() {
             // WORK: do something
             Serial.print("  end B ");
@@ -235,8 +233,6 @@ void _tandem_schedule_a() {
 
 void _tandem_schedule_b() {
     int8_t err_code = 0;
-
-    timer1.resetB();
 
     err_code = timer1.scheduleBOnce(500, []() {
         // WORK: do something
@@ -299,7 +295,7 @@ void example_very_large_recurring_delay_without_stop() {
         ++_example_very_large_delay_cnt;
         if (_example_very_large_delay_cnt == 50) {
             _example_very_large_delay_cnt = 0;
-            Serial.print("end at ");
+            Serial.print("lap at ");
             Serial.println(millis());
         }
     });

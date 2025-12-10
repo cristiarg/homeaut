@@ -99,6 +99,8 @@ public:
 
     /**
      * Reset/stop TIMER1 comparer A interrupt; do not touch B
+     *
+     * TODO: this function is too "brute force"
      */
     static void resetA() {
         cli();
@@ -116,6 +118,8 @@ public:
 
     /**
      * Reset/stop TIMER1 comparer B interrupt; do not touch A
+     *
+     * TODO: this function is too "brute force"
      */
     static void resetB() {
         cli();
@@ -195,18 +199,39 @@ public:
         return doScheduleB(delay_ms, -1, cb);
     }
 
+    // static bool isADone() {
+    //     const uint8_t _set = (TIMSK1 & (1 << OCIE1A));
+    //     Serial.print("a_set ");
+    //     Serial.println(_set);
+    //     return (_set == 0);
+    // }
+
+    // static bool isBDone() {
+    //     const uint8_t _set = (TIMSK1 & (1 << OCIE1B));
+    //     Serial.print("b_set ");
+    //     Serial.println(_set);
+    //     return (_set == 0);
+    // }
+
 private:
     static int8_t doScheduleA(uint32_t delay_ms, int8_t recurrence, Callback cb) {
         if (cb == NULL) {
             return ER_NULL_CALLBACK;
         }
-        // TODO:
-        //  - race condition with possible existing setting; how to fix?
-        //  - alleviate by manipulating TIMSK1 and re-setting / setting flag OCIE1A as appropriate
+
+        // save old state of the mask for activating the A comparer
+        const uint8_t output_compare_set_before = TIMSK1 & (1 << OCIE1A);
+        // disable A comparer to eliminate the possibility of race conditions while all configs are done
+        TIMSK1 &= ~(1 << OCIE1A);
+
         const int8_t err_code = setupCompare(delay_ms, A);
         if (err_code == ER_OK) {
             Timer1Helper::cbA_recurrence = recurrence;
             Timer1Helper::cbA = cb;
+
+            TIMSK1 |= (1 << OCIE1A);
+        } else {
+            TIMSK1 |= output_compare_set_before; // if current request failed, leave as before
         }
         return err_code;
     }
@@ -215,13 +240,21 @@ private:
         if (cb == NULL) {
             return ER_NULL_CALLBACK;
         }
-        // TODO:
-        //  - race condition with possible existing setting; how to fix?
-        //  - alleviate by manipulating TIMSK1 and re-setting / setting flag OCIE1B as appropriate
+
+        // save old state of the mask for activating the B comparer
+        const uint8_t output_compare_set_before = TIMSK1 & (1 << OCIE1B);
+        // disable B comparer to eliminate the possibility of race conditions while all configs are done
+        TIMSK1 &= ~(1 << OCIE1B);
+
         const int8_t err_code = setupCompare(delay_ms, B);
         if (err_code == ER_OK) {
             Timer1Helper::cbB_recurrence = recurrence;
             Timer1Helper::cbB = cb;
+
+            // all set successfully, only now do set the flag to activate output comparer B
+            TIMSK1 |= (1 << OCIE1B);
+        } else {
+            TIMSK1 |= output_compare_set_before; // if current request failed, leave as before
         }
         return err_code;
     }
@@ -276,11 +309,13 @@ private:
             if (ch == A) {
                 Timer1Helper::cbA_compare_value = compareValue;
                 OCR1A = target;
-                TIMSK1 |= (1 << OCIE1A);
+                // output comparer A is only activated after all relevant configs are done
+                //TIMSK1 |= (1 << OCIE1A);
             } else {
                 Timer1Helper::cbB_compare_value = compareValue;
                 OCR1B = target;
-                TIMSK1 |= (1 << OCIE1B);
+                // output comparer B is only activated after all relevant configs are done
+                //TIMSK1 |= (1 << OCIE1B);
             }
             // Start timer with shared prescaler
             TCCR1B = prescaleBits;
@@ -298,7 +333,7 @@ private:
 
     static bool choosePrescaler(uint32_t ticks, uint16_t &bits, uint16_t *compare) {
         static const struct {
-          uint16_t bits;
+          uint16_t bits; // TODO: uint8_t should be enough
           uint16_t div;
         } prescale_arr[] = {
           {1, 1},
@@ -343,24 +378,21 @@ ISR(TIMER1_COMPA_vect) {
         if (Timer1Helper::cbA_recurrence > 0) {
             Timer1Helper::cbA_recurrence -= 1;
         }
+
         if (Timer1Helper::cbA_recurrence == 0) {
             TIMSK1 &= ~(1 << OCIE1A);
             Timer1Helper::cbA = nullptr;
+        } else {
+            // adjust Output Compare Register A for correct next firing according to calculated delay
+            // (makes heavy use of math overflow of the 16 bit register)
+            const uint16_t now = TCNT1;
+            const uint16_t target = now + Timer1Helper::cbA_compare_value;
+            OCR1A = target;
         }
-
-        // adjust Output Compare Register A for correct next firing according to calculated delay
-        // (makes heavy use of math overflow of the 16 bit register)
-        const uint16_t now = TCNT1;
-        const uint16_t target = now + Timer1Helper::cbA_compare_value;
-        OCR1A = target;
 
         fn();
     } else {
-        // here be dragons; this would be an inconsistent state resulting from potential
-        // race conditions; when new values are set for one of the comparers, this is
-        // done in a hot-swap manner, without actually disabling interrupt handling
-        // for that comparer (if enabled)
-        // TODO: we could temporary disable the corresponding flag in TIMSK1 - to be investigated
+        // (should be) unreachable
     }
 }
 
@@ -371,18 +403,21 @@ ISR(TIMER1_COMPB_vect) {
         if (Timer1Helper::cbB_recurrence > 0) {
             Timer1Helper::cbB_recurrence -= 1;
         }
+
         if (Timer1Helper::cbB_recurrence == 0) {
             TIMSK1 &= ~(1 << OCIE1B);
             Timer1Helper::cbB = nullptr;
             Timer1Helper::cbB_compare_value = 0;
+        } else {
+            // adjust Output Compare Register B for correct next firing according to calculated delay
+            // (makes heavy use of math overflow of the 16 bit register)
+            const uint16_t now = TCNT1;
+            const uint16_t target = now + Timer1Helper::cbB_compare_value;
+            OCR1B = target;
         }
 
-        // adjust Output Compare Register B for correct next firing according to calculated delay
-        // (makes heavy use of math overflow of the 16 bit register)
-        const uint16_t now = TCNT1;
-        const uint16_t target = now + Timer1Helper::cbB_compare_value;
-        OCR1B = target;
-
         fn();
+    } else {
+        // (should be) unreachable
     }
 }
