@@ -37,6 +37,9 @@
  *      - https://wolles-elektronikkiste.de/en/interrupts-part-3-timer-interrupts -
  *        see "Using multiple Timer1 interruputs" where all 3 can be used
  *
+ * Caveats:
+ *  - only tested on an Arduino UNO board with an ATmega328P
+ *
  * Resources:
  *  - https://wolles-elektronikkiste.de/en/timer-and-pwm-part-2-16-bit-timer1
  *  - https://wolles-elektronikkiste.de/en/interrupts-part-3-timer-interrupts
@@ -73,70 +76,64 @@ public:
     }
 
     /**
-     * Reset/stop any working interrupts on both comparers
+     * Reset/stop any working interrupts on both comparers.
+     *
+     * It is needed to call this function if it is needed to switch from one prescaler
+     * range to a different one. Example:
+     *  - one (or both) comparer channel(s) have been used in the delay range (263ms, 1048ms)
+     *  - now it is needed to use one (or both) with delays higher than 1048ms
+     *  - call @reset() to allow such a change
      */
     static void reset() {
         cli(); // CLear Interrupts
 
         Timer1Helper::prescaler_bits = 0;
 
-        Timer1Helper::cbA = nullptr;
-        Timer1Helper::cbA_recurrence = 0;
-        Timer1Helper::cbA_compare_value = 0;
-
-        Timer1Helper::cbB = nullptr;
-        Timer1Helper::cbB_recurrence = 0;
-        Timer1Helper::cbB_compare_value = 0;
-
         TCCR1A = 0;
         TCCR1B = 0; // Stop timer
-        TIMSK1 = 0; // Disable all Timer1 interrupts (A, B comparers and overflow)
+
+        // NOTE: in TIMSK1 register, bits will be cleared for A, B Output Compare
+        // Matches (OCIE1A, OCIE1B) but not for Timer Overflow (TOIE1). Thus, if that
+        // one is used independently, it will not be affected (but, I suppose there are other
+        // 'strings attached' - as the shared prescaler and its value).
+        resetA();
+        resetB();
+
         TCNT1 = 0; // counter
-        TIFR1 = 0; // clear occured interrupt flag register
 
         sei(); // SEt Interrupts
     }
 
     /**
-     * Reset/stop TIMER1 comparer A interrupt; do not touch B
-     *
-     * TODO: this function is too "brute force"
+     * Reset/stop TIMER1 comparer A interrupt only; leave everything else as is
      */
     static void resetA() {
-        cli();
+        TIMSK1 &= ~(1 << OCIE1A);
 
         Timer1Helper::cbA = nullptr;
         Timer1Helper::cbA_recurrence = 0;
         Timer1Helper::cbA_compare_value = 0;
 
-        TIMSK1 &= ~(1 << OCIE1A);
         OCR1A = 0;
         TIFR1 &= ~(1 << OCF1A);
-
-        sei();
     }
 
     /**
-     * Reset/stop TIMER1 comparer B interrupt; do not touch A
-     *
-     * TODO: this function is too "brute force"
+     * Reset/stop TIMER1 comparer B interrupt only ; leave everything else as is/was
      */
     static void resetB() {
-        cli();
+        TIMSK1 &= ~(1 << OCIE1B);
 
         Timer1Helper::cbB = nullptr;
         Timer1Helper::cbB_recurrence = 0;
         Timer1Helper::cbB_compare_value = 0;
 
-        TIMSK1 &= ~(1 << OCIE1B);
         OCR1B = 0;
         TIFR1 &= ~(1 << OCF1B);
-
-        sei();
     }
 
     /**
-     * Schedule TIMER1 comparer A to fire once at @delay_ms from 'now'.
+     * Schedule TIMER1 comparer A to fire @cb callback once at @delay_ms millis from `now()`.
      *
      * @return error code (see class static constants)
      */
@@ -146,7 +143,7 @@ public:
 
     /**
      * Schedule TIMER1 comparer A to fire @cb callback a @recurrence number of times (equidistant
-     * in time) with first firing at @delay_ms from 'now'.
+     * in time) with first firing at @delay_ms millis from `now()`.
      *
      * @return error code (see class static constants)
      */
@@ -159,7 +156,7 @@ public:
 
     /**
      * Schedule TIMER1 comparer B to fire @cb callback an indefinite number of times (equidistant
-     * in time) with first firing at @delay_ms from 'now'.
+     * in time) with first firing at @delay_ms millis from `now()`.
      *
      * @return error code (see class static constants)
      */
@@ -168,7 +165,7 @@ public:
     }
 
     /**
-     * Schedule TIMER1 comparer B to fire once at @delay_ms from 'now'.
+     * Schedule TIMER1 comparer B to fire @cb callback once at @delay_ms millis from `now()`.
      *
      * @return error code (see class static constants)
      */
@@ -178,7 +175,7 @@ public:
 
     /**
      * Schedule TIMER1 comparer B to fire @cb callback a @recurrence number of times (equidistant
-     * in time) with first firing at @delay_ms from 'now'.
+     * in time) with first firing at @delay_ms millis from `now()`.
      *
      * @return error code (see class static constants)
      */
@@ -191,7 +188,7 @@ public:
 
     /**
      * Schedule TIMER1 comparer B to fire @cb callback an indefinite number of times (equidistant
-     * in time) with first firing at @delay_ms from 'now'.
+     * in time) with first firing at @delay_ms millis from `now()`.
      *
      * @return error code (see class static constants)
      */
@@ -219,9 +216,9 @@ private:
             return ER_NULL_CALLBACK;
         }
 
-        // save old state of the mask for activating the A comparer
+        // save state and disable A comparer to eliminate the possibility of race conditions
+        // while all configs are done (ie. A comparer settings are inconsistent)
         const uint8_t output_compare_set_before = TIMSK1 & (1 << OCIE1A);
-        // disable A comparer to eliminate the possibility of race conditions while all configs are done
         TIMSK1 &= ~(1 << OCIE1A);
 
         const int8_t err_code = setupCompare(delay_ms, A);
@@ -231,7 +228,8 @@ private:
 
             TIMSK1 |= (1 << OCIE1A);
         } else {
-            TIMSK1 |= output_compare_set_before; // if current request failed, leave as before
+            // if current request failed, leave as before
+            TIMSK1 |= output_compare_set_before;
         }
         return err_code;
     }
@@ -241,9 +239,9 @@ private:
             return ER_NULL_CALLBACK;
         }
 
-        // save old state of the mask for activating the B comparer
+        // save state and disable B comparer to eliminate the possibility of race conditions
+        // while all configs are done (ie. B comparer settings are inconsistent)
         const uint8_t output_compare_set_before = TIMSK1 & (1 << OCIE1B);
-        // disable B comparer to eliminate the possibility of race conditions while all configs are done
         TIMSK1 &= ~(1 << OCIE1B);
 
         const int8_t err_code = setupCompare(delay_ms, B);
@@ -254,7 +252,8 @@ private:
             // all set successfully, only now do set the flag to activate output comparer B
             TIMSK1 |= (1 << OCIE1B);
         } else {
-            TIMSK1 |= output_compare_set_before; // if current request failed, leave as before
+            // if current request failed, leave as before
+            TIMSK1 |= output_compare_set_before;
         }
         return err_code;
     }
@@ -270,11 +269,11 @@ private:
 
 public: // statics
     /**
-     * the prescaler is shared between the two comparers; this static is part of a
+     * the prescaler is shared between the two comparers; this static is a
      * mechanism to ensure that the two delays are not imcompatible when different delay
      * intervals are requested
      */
-    static uint16_t prescaler_bits;
+    static uint8_t prescaler_bits;
     static Callback cbA;
     /**
      * < 0 : infinite recurrence
@@ -292,7 +291,7 @@ private:
     static int8_t setupCompare(uint32_t delay_ms, Channel ch) {
         // Convert ms to timer ticks and choose prescaler
         const uint32_t ticks = (F_CPU / 1000UL) * delay_ms; // raw ticks - the range in ticks that we need to have in the prescaler to be able to accomodate the required delay
-        uint16_t prescaleBits = 0;
+        uint8_t prescaleBits = 0;
         uint16_t compareValue = 0;
 
         if (choosePrescaler(ticks, prescaleBits, &compareValue)) {
@@ -317,8 +316,8 @@ private:
                 // output comparer B is only activated after all relevant configs are done
                 //TIMSK1 |= (1 << OCIE1B);
             }
-            // Start timer with shared prescaler
-            TCCR1B = prescaleBits;
+            // set value for single prescaler shared between A and B comparers
+            TCCR1B |= prescaleBits;
             // NOTE: TCCR1B |= (1 << WGM12) sets CTC mode (Clear Timer on Compare Mode 4)
             // which results in the timer counter only counting up to OCR1A and then
             // is deactivated - https://wolles-elektronikkiste.de/wp-content/uploads/2020/01/WGM1.png ;
@@ -331,9 +330,9 @@ private:
         }
     }
 
-    static bool choosePrescaler(uint32_t ticks, uint16_t &bits, uint16_t *compare) {
+    static bool choosePrescaler(uint32_t ticks, uint8_t &bits, uint16_t *compare) {
         static const struct {
-          uint16_t bits; // TODO: uint8_t should be enough
+          uint8_t bits;
           uint16_t div;
         } prescale_arr[] = {
           {1, 1},
@@ -343,7 +342,7 @@ private:
           {5, 1024}
         };
         for (auto &prescale : prescale_arr) {
-            uint32_t t = ticks / prescale.div;
+            const uint32_t t = ticks / prescale.div;
             if (t <= 65535) { // TIMER1 is 16 bits
                 bits = prescale.bits;
                 *compare = (uint16_t)t;
@@ -355,7 +354,7 @@ private:
 };
 
 // static members
-uint16_t Timer1Helper::prescaler_bits = 0;
+uint8_t Timer1Helper::prescaler_bits = 0;
 
 Timer1Helper::Callback Timer1Helper::cbA = nullptr;
 int8_t Timer1Helper::cbA_recurrence = 0;
