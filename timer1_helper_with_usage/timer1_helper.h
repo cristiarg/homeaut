@@ -39,6 +39,8 @@
  *
  * Caveats:
  *  - only tested on an Arduino UNO board with an ATmega328P
+ *  - the class is garnished with all nuts&bolts; if some features are not needed (eg.
+ *      the callback function `isDone` argument; or the recurrence calls) these can be removed
  *
  * Resources:
  *  - https://wolles-elektronikkiste.de/en/timer-and-pwm-part-2-16-bit-timer1
@@ -46,7 +48,11 @@
  */
 class Timer1Helper {
 public:
-    typedef void (*Callback)();
+    /**
+     * @param isDone - true when the callback is the last in the recurrence series; if the
+     *      timer is configured for indefinite execution, the parameter will always be false
+     */
+    typedef void (*Callback)(bool isDone);
 
     /**
      * no error
@@ -136,6 +142,9 @@ public:
      * Schedule TIMER1 comparer A to fire @cb callback once at @delay_ms millis from `now()`.
      *
      * @return error code (see class static constants)
+     *
+     * @param delay_ms - delay in millis
+     * @param cb - pointer to the callback function
      */
     static int8_t scheduleAOnce(uint32_t delay_ms, Callback cb) {
         return doScheduleA(delay_ms, 1, cb);
@@ -146,6 +155,10 @@ public:
      * in time) with first firing at @delay_ms millis from `now()`.
      *
      * @return error code (see class static constants)
+     *
+     * @param delay_ms - delay in millis
+     * @param recurrence - the number of times to call the @cb callback function before de-activating
+     * @param cb - pointer to the callback function
      */
     static int8_t scheduleARecurrent(uint32_t delay_ms, int8_t recurrence, Callback cb) {
         if (recurrence <= 0) {
@@ -159,6 +172,9 @@ public:
      * in time) with first firing at @delay_ms millis from `now()`.
      *
      * @return error code (see class static constants)
+     *
+     * @param delay_ms - delay in millis
+     * @param cb - pointer to the callback function
      */
     static int8_t scheduleAIndefinitely(uint32_t delay_ms, Callback cb) {
         return doScheduleA(delay_ms, -1, cb);
@@ -168,6 +184,9 @@ public:
      * Schedule TIMER1 comparer B to fire @cb callback once at @delay_ms millis from `now()`.
      *
      * @return error code (see class static constants)
+     *
+     * @param delay_ms - delay in millis
+     * @param cb - pointer to the callback function
      */
     static int8_t scheduleBOnce(uint32_t delay_ms, Callback cb) {
         return doScheduleB(delay_ms, 1, cb);
@@ -178,6 +197,10 @@ public:
      * in time) with first firing at @delay_ms millis from `now()`.
      *
      * @return error code (see class static constants)
+     *
+     * @param delay_ms - delay in millis
+     * @param recurrence - the number of times to call the @cb callback function before de-activating
+     * @param cb - pointer to the callback function
      */
     static int8_t scheduleBRecurrent(uint32_t delay_ms, int8_t recurrence, Callback cb) {
         if (recurrence <= 0) {
@@ -191,24 +214,13 @@ public:
      * in time) with first firing at @delay_ms millis from `now()`.
      *
      * @return error code (see class static constants)
+     *
+     * @param delay_ms - delay in millis
+     * @param cb - pointer to the callback function
      */
     static int8_t scheduleBIndefinitely(uint32_t delay_ms, Callback cb) {
         return doScheduleB(delay_ms, -1, cb);
     }
-
-    // static bool isADone() {
-    //     const uint8_t _set = (TIMSK1 & (1 << OCIE1A));
-    //     Serial.print("a_set ");
-    //     Serial.println(_set);
-    //     return (_set == 0);
-    // }
-
-    // static bool isBDone() {
-    //     const uint8_t _set = (TIMSK1 & (1 << OCIE1B));
-    //     Serial.print("b_set ");
-    //     Serial.println(_set);
-    //     return (_set == 0);
-    // }
 
 private:
     static int8_t doScheduleA(uint32_t delay_ms, int8_t recurrence, Callback cb) {
@@ -309,11 +321,13 @@ private:
                 Timer1Helper::cbA_compare_value = compareValue;
                 OCR1A = target;
                 // output comparer A is only activated after all relevant configs are done
+                // in order to limit race conditions as much as possible
                 //TIMSK1 |= (1 << OCIE1A);
             } else {
                 Timer1Helper::cbB_compare_value = compareValue;
                 OCR1B = target;
                 // output comparer B is only activated after all relevant configs are done
+                // in order to limit race conditions as much as possible
                 //TIMSK1 |= (1 << OCIE1B);
             }
             // set value for single prescaler shared between A and B comparers
@@ -378,9 +392,12 @@ ISR(TIMER1_COMPA_vect) {
             Timer1Helper::cbA_recurrence -= 1;
         }
 
+        bool isDone = false;
         if (Timer1Helper::cbA_recurrence == 0) {
             TIMSK1 &= ~(1 << OCIE1A);
             Timer1Helper::cbA = nullptr;
+            Timer1Helper::cbA_compare_value = 0;
+            isDone = true;
         } else {
             // adjust Output Compare Register A for correct next firing according to calculated delay
             // (makes heavy use of math overflow of the 16 bit register)
@@ -389,7 +406,7 @@ ISR(TIMER1_COMPA_vect) {
             OCR1A = target;
         }
 
-        fn();
+        fn(isDone);
     } else {
         // (should be) unreachable
     }
@@ -403,10 +420,12 @@ ISR(TIMER1_COMPB_vect) {
             Timer1Helper::cbB_recurrence -= 1;
         }
 
+        bool isDone = false;
         if (Timer1Helper::cbB_recurrence == 0) {
             TIMSK1 &= ~(1 << OCIE1B);
             Timer1Helper::cbB = nullptr;
             Timer1Helper::cbB_compare_value = 0;
+            isDone = true;
         } else {
             // adjust Output Compare Register B for correct next firing according to calculated delay
             // (makes heavy use of math overflow of the 16 bit register)
@@ -415,7 +434,7 @@ ISR(TIMER1_COMPB_vect) {
             OCR1B = target;
         }
 
-        fn();
+        fn(isDone);
     } else {
         // (should be) unreachable
     }
