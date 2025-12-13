@@ -93,6 +93,7 @@ public:
     static void reset() {
         cli(); // CLear Interrupts
 
+        // only if this is reset, it is allowed to go from one prescaler value to a different one
         Timer1Helper::prescaler_bits = 0;
 
         TCCR1A = 0;
@@ -160,7 +161,7 @@ public:
      * @param recurrence - the number of times to call the @cb callback function before de-activating
      * @param cb - pointer to the callback function
      */
-    static int8_t scheduleARecurrent(uint32_t delay_ms, int8_t recurrence, Callback cb) {
+    static int8_t scheduleARecurrent(uint32_t delay_ms, int16_t recurrence, Callback cb) {
         if (recurrence <= 0) {
             return ER_INVALID_RECURRENCE_VALUE;
         }
@@ -202,7 +203,7 @@ public:
      * @param recurrence - the number of times to call the @cb callback function before de-activating
      * @param cb - pointer to the callback function
      */
-    static int8_t scheduleBRecurrent(uint32_t delay_ms, int8_t recurrence, Callback cb) {
+    static int8_t scheduleBRecurrent(uint32_t delay_ms, int16_t recurrence, Callback cb) {
         if (recurrence <= 0) {
             return ER_INVALID_RECURRENCE_VALUE;
         }
@@ -223,7 +224,7 @@ public:
     }
 
 private:
-    static int8_t doScheduleA(uint32_t delay_ms, int8_t recurrence, Callback cb) {
+    static int8_t doScheduleA(uint32_t delay_ms, int16_t recurrence, Callback cb) {
         if (cb == NULL) {
             return ER_NULL_CALLBACK;
         }
@@ -246,7 +247,7 @@ private:
         return err_code;
     }
 
-    static int8_t doScheduleB(uint32_t delay_ms, int8_t recurrence, Callback cb) {
+    static int8_t doScheduleB(uint32_t delay_ms, int16_t recurrence, Callback cb) {
         if (cb == NULL) {
             return ER_NULL_CALLBACK;
         }
@@ -292,11 +293,11 @@ public: // statics
      * == 0: invalid value; it is actually the idle value
      * > 0 : specifies the number of recurrences
      */
-    static int8_t cbA_recurrence;
+    static int16_t cbA_recurrence;
     static uint16_t cbA_compare_value;
 
     static Callback cbB;
-    static int8_t cbB_recurrence;
+    static int16_t cbB_recurrence;
     static uint16_t cbB_compare_value;
 
 private:
@@ -371,11 +372,11 @@ private:
 uint8_t Timer1Helper::prescaler_bits = 0;
 
 Timer1Helper::Callback Timer1Helper::cbA = nullptr;
-int8_t Timer1Helper::cbA_recurrence = 0;
+int16_t Timer1Helper::cbA_recurrence = 0;
 uint16_t Timer1Helper::cbA_compare_value = 0;
 
 Timer1Helper::Callback Timer1Helper::cbB = nullptr;
-int8_t Timer1Helper::cbB_recurrence = 0;
+int16_t Timer1Helper::cbB_recurrence = 0;
 uint16_t Timer1Helper::cbB_compare_value = 0;
 
 // ISRs
@@ -386,27 +387,25 @@ ISR(TIMER1_COMPA_vect) {
     if (/*Timer1Helper::cbA != NULL &&*/ Timer1Helper::cbA_recurrence != 0) {
         auto fn = Timer1Helper::cbA;
 
-        // example with 3 recurrence:
-        // 3->2, cb; 2->1, cb; 1->0, deactivate, cb
         if (Timer1Helper::cbA_recurrence > 0) {
             Timer1Helper::cbA_recurrence -= 1;
         }
 
-        bool isDone = false;
         if (Timer1Helper::cbA_recurrence == 0) {
             TIMSK1 &= ~(1 << OCIE1A);
             Timer1Helper::cbA = nullptr;
             Timer1Helper::cbA_compare_value = 0;
-            isDone = true;
+
+            fn(true);
         } else {
             // adjust Output Compare Register A for correct next firing according to calculated delay
             // (makes heavy use of math overflow of the 16 bit register)
             const uint16_t now = TCNT1;
             const uint16_t target = now + Timer1Helper::cbA_compare_value;
             OCR1A = target;
-        }
 
-        fn(isDone);
+            fn(false);
+        }
     } else {
         // (should be) unreachable
     }
@@ -420,21 +419,22 @@ ISR(TIMER1_COMPB_vect) {
             Timer1Helper::cbB_recurrence -= 1;
         }
 
-        bool isDone = false;
         if (Timer1Helper::cbB_recurrence == 0) {
             TIMSK1 &= ~(1 << OCIE1B);
             Timer1Helper::cbB = nullptr;
             Timer1Helper::cbB_compare_value = 0;
-            isDone = true;
+
+            fn(true);
         } else {
             // adjust Output Compare Register B for correct next firing according to calculated delay
             // (makes heavy use of math overflow of the 16 bit register)
             const uint16_t now = TCNT1;
             const uint16_t target = now + Timer1Helper::cbB_compare_value;
             OCR1B = target;
+
+            fn(false);
         }
 
-        fn(isDone);
     } else {
         // (should be) unreachable
     }

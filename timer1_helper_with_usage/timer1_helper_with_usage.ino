@@ -181,8 +181,8 @@ void example_fire_recurrent_only_channel_B() {
     Serial.print("sta ");
     Serial.println(millis());
 
-    const uint32_t _delay_ms_B = 938;
-    const int8_t _recurrence_B = 8;
+    const uint32_t _delay_ms_B = 200;
+    const int16_t _recurrence_B = 130;
     err_code = timer1.scheduleBRecurrent(_delay_ms_B, _recurrence_B, [](bool) {
         Serial.print("iter B at ");
         Serial.print(millis());
@@ -289,7 +289,7 @@ void example_fire_one_channel_with_small_delay_nested_into_larger_delay_of_the_o
     Serial.println(millis());
 
     const uint32_t _delay_ms_A = 3000;
-    const int8_t _recurrence_A = 5;
+    const int16_t _recurrence_A = 5;
     _fire_one_channel_with_small_delay_nested_into_larger_delay_of_the_other_channel_iter_A = 0;
     err_code = timer1.scheduleARecurrent(_delay_ms_A, _recurrence_A, [](bool) {
         ++_fire_one_channel_with_small_delay_nested_into_larger_delay_of_the_other_channel_iter_A;
@@ -319,7 +319,7 @@ void example_fire_one_channel_with_small_delay_nested_into_larger_delay_of_the_o
     }
 }
 
-uint32_t _tandem_schedule_A_rnd;
+volatile uint32_t _tandem_schedule_A_rnd;
 void _tandem_schedule_A() {
     int8_t err_code = 0;
 
@@ -330,18 +330,18 @@ void _tandem_schedule_A() {
         // .. and immediately re-schedule the other handler ..
         _tandem_schedule_B();
         // .. then do actual work asynchronously
-        Serial.print("end A ");
-        Serial.print(_now_ms);
-        Serial.print(" +");
-        Serial.println(_tandem_schedule_A_rnd);
+        Serial.print("end A @");
+        Serial.println(_now_ms);
     });
     if (err_code != Timer1Helper::ER_OK) {
         Serial.print("ERR: A code ");
         Serial.println(err_code);
     }
+    Serial.print("sch A @");
+    Serial.println((millis() + _tandem_schedule_A_rnd));
 }
 
-uint32_t _tandem_schedule_B_rnd;
+volatile uint32_t _tandem_schedule_B_rnd;
 void _tandem_schedule_B() {
     int8_t err_code = 0;
 
@@ -352,22 +352,19 @@ void _tandem_schedule_B() {
         // .. and immediately schedule the other handler ..
         _tandem_schedule_A();
         // .. then do actual work asynchronously
-        Serial.print("end B ");
-        Serial.print(_now_ms);
-        Serial.print(" +");
-        Serial.println(_tandem_schedule_B_rnd);
+        Serial.print("end B @");
+        Serial.println(_now_ms);
     });
     if (err_code != Timer1Helper::ER_OK) {
         Serial.print("ERR: B code ");
         Serial.println(err_code);
     }
+    Serial.print("sch B @");
+    Serial.println((millis() + _tandem_schedule_B_rnd));
 }
 
 void example_tandem() {
     timer1.reset(); // clean before
-
-    Serial.print("sta ");
-    Serial.println(millis());
 
     _tandem_schedule_A();
 }
@@ -453,6 +450,36 @@ void example_schedule_with_a_function() {
     }
 }
 
+volatile uint32_t _self_tandem_schedule_A_rnd;
+volatile uint32_t _self_tandem_iter = 0;
+void example_self_tandem() {
+    int8_t err_code = 0;
+
+    ++_self_tandem_iter;
+    _self_tandem_schedule_A_rnd = (uint32_t)random(1050, 3000);
+    //timer1.resetA();
+    err_code = timer1.scheduleAOnce(_self_tandem_schedule_A_rnd, [](bool) {
+        // save needed values ..
+        const unsigned long _now_ms = millis();
+        const uint32_t _iter = _self_tandem_iter;
+        // .. and immediately re-schedule ..
+        example_self_tandem();
+        // .. then do actual work asynchronously
+        Serial.print("end A ");
+        Serial.print(_iter);
+        Serial.print("@");
+        Serial.println(_now_ms);
+    });
+    if (err_code != Timer1Helper::ER_OK) {
+        Serial.print("ERR: A code ");
+        Serial.println(err_code);
+    }
+    Serial.print("sch A ");
+    Serial.print(_self_tandem_iter);
+    Serial.print("@");
+    Serial.println((millis() + _self_tandem_schedule_A_rnd));
+}
+
 void setup() {
     Serial.begin(9600);
     Serial.println("init");
@@ -461,7 +488,7 @@ void setup() {
 
     timer1.reset();
 
-    example_fire_once_channels_a_b();
+    //example_fire_once_channels_a_b();
     //example_error_prescaler_calculates_incompatible_value_between_the_two_channels_and_will_not_be_set();
     //example_error_delay_is_beyond_the_upper_max_for_timer1();
     //example_error_invalid_recurrence_value();
@@ -477,6 +504,7 @@ void setup() {
     //example_very_large_delay_and_stop_from_within_handler_routine();
     //example_very_large_recurring_delay_without_stop();
     //example_schedule_with_a_function();
+    //example_self_tandem();
 }
 
 void loop() {
