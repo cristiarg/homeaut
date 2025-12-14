@@ -294,18 +294,18 @@ public: // statics
      * intervals are requested
      */
     static uint8_t prescaler_bits;
-    static Callback cbA;
+    static volatile Callback cbA;
     /**
      * < 0 : infinite recurrence
      * == 0: invalid value; it is actually the idle value
      * > 0 : specifies the number of recurrences
      */
-    static int16_t cbA_recurrence;
-    static uint16_t cbA_compare_value;
+    static volatile int16_t cbA_recurrence;
+    static volatile uint16_t cbA_compare_value;
 
-    static Callback cbB;
-    static int16_t cbB_recurrence;
-    static uint16_t cbB_compare_value;
+    static volatile Callback cbB;
+    static volatile int16_t cbB_recurrence;
+    static volatile uint16_t cbB_compare_value;
 
 private:
     static int8_t setupCompare(uint32_t delay_ms, Channel ch) {
@@ -378,13 +378,13 @@ private:
 // static members
 uint8_t Timer1Helper::prescaler_bits = 0;
 
-Timer1Helper::Callback Timer1Helper::cbA = nullptr;
-int16_t Timer1Helper::cbA_recurrence = 0;
-uint16_t Timer1Helper::cbA_compare_value = 0;
+volatile Timer1Helper::Callback Timer1Helper::cbA = nullptr;
+volatile int16_t Timer1Helper::cbA_recurrence = 0;
+volatile uint16_t Timer1Helper::cbA_compare_value = 0;
 
-Timer1Helper::Callback Timer1Helper::cbB = nullptr;
-int16_t Timer1Helper::cbB_recurrence = 0;
-uint16_t Timer1Helper::cbB_compare_value = 0;
+volatile Timer1Helper::Callback Timer1Helper::cbB = nullptr;
+volatile int16_t Timer1Helper::cbB_recurrence = 0;
+volatile uint16_t Timer1Helper::cbB_compare_value = 0;
 
 // ISRs
 ISR(TIMER1_COMPA_vect) {

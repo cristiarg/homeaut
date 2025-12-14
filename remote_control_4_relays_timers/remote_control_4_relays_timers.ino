@@ -1,12 +1,15 @@
 
+#include <avr/sleep.h>
+#include <avr/power.h>
 #include "types.h"
 #include "timer1_helper.h"
 
 /**
  * these defines function as flags between a 'debug' and a 'release build
  */
-#define SERIAL_DEBUG_INPUT
+//#define SERIAL_DEBUG_INPUT
 //#define SERIAL_DEBUG_WORK
+//#define SERIAL_DEBUG_WORK_LED
 
 static Timer1Helper timer1;
  
@@ -16,34 +19,34 @@ static Timer1Helper timer1;
 
 volatile work_state_t work_state = STATE_INVALID;
 
-#if defined(SERIAL_DEBUG_WORK)
-const uint8_t ledPin = 13; // TODO: delete, only for testing
-#endif
+//#if defined(SERIAL_DEBUG_WORK_LED)
+static const uint8_t ledPin = 13; // TODO: delete, only for testing
+//#endif
 
 // output relays pins
-const uint8_t relay1 = 8;
-const uint8_t relay2 = 9;
-const uint8_t relay3 = 10;
-const uint8_t relay4 = 11;
+static const uint8_t PIN_OUT_DIG08_RELAY1 = 8;
+static const uint8_t PIN_OUT_DIG09_RELAY2 = 9;
+static const uint8_t PIN_OUT_DIG10_RELAY3 = 10;
+static const uint8_t PIN_OUT_DIG11_RELAY4 = 11;
 
 void set_relay_ALL_off()
 {
-  digitalWrite(relay1, HIGH); // HIGH == OFF
-  digitalWrite(relay2, HIGH);
-  digitalWrite(relay3, HIGH);
-  digitalWrite(relay4, HIGH);
+  digitalWrite(PIN_OUT_DIG08_RELAY1, HIGH); // HIGH == OFF
+  digitalWrite(PIN_OUT_DIG09_RELAY2, HIGH);
+  digitalWrite(PIN_OUT_DIG10_RELAY3, HIGH);
+  digitalWrite(PIN_OUT_DIG11_RELAY4, HIGH);
 }
 
 void set_relay_UP_on()
 {
-  digitalWrite(relay1, LOW);
-  digitalWrite(relay2, LOW);
+  digitalWrite(PIN_OUT_DIG08_RELAY1, LOW);
+  digitalWrite(PIN_OUT_DIG09_RELAY2, LOW);
 }
 
 void set_relay_DOWN_on()
 {
-  digitalWrite(relay3, LOW);
-  digitalWrite(relay4, LOW);
+  digitalWrite(PIN_OUT_DIG10_RELAY3, LOW);
+  digitalWrite(PIN_OUT_DIG11_RELAY4, LOW);
 }
 
 
@@ -79,6 +82,8 @@ void set_relay_DOWN_on()
 
 /**
  * callback after commanding the relays to OFF to bring the state to IDLE
+ *
+ * This is to ensure a so-called debounce delay
  */
 void _timer_cb_A_after_relays_off(bool is_done) {
   if (is_done) {
@@ -91,6 +96,17 @@ void _timer_cb_A_after_relays_off(bool is_done) {
   } else {
     //work_state = STATE_CHANGING;
   }
+}
+
+void work_emergency_all_off_and_reset() {
+  set_relay_ALL_off();
+  timer1.reset(); // clean before
+  // invalid state because the only command considered in this state is "all relays off"
+  work_state = STATE_INVALID;
+
+#if defined(SERIAL_DEBUG_INPUT) || defined(SERIAL_DEBUG_WORK)
+  Serial.println("WARN:E-R");
+#endif
 }
 
 /**
@@ -108,7 +124,7 @@ void work_relays_off() {
 
   // stop relays and allow some timeout for actual switching before
   // setting the proper idle state to allow considering another command
-#if defined(SERIAL_DEBUG_WORK)
+#if defined(SERIAL_DEBUG_WORK_LED)
   digitalWrite(ledPin, LOW);
 #endif
   set_relay_ALL_off();
@@ -117,6 +133,7 @@ void work_relays_off() {
   const int16_t recurrence = 8;
   const int8_t err_code = timer1.scheduleARecurrent(delay_ms, recurrence, &_timer_cb_A_after_relays_off);
   if (err_code != Timer1Helper::ER_OK) {
+    work_emergency_all_off_and_reset();
 #if defined(SERIAL_DEBUG_WORK)
     Serial.print("ERR:idle1:");
     Serial.println(err_code);
@@ -131,6 +148,7 @@ void _timer_cb_B_after_schedule_up_or_down(bool is_done) {
   if (is_done) {
     timer1.resetB();
 
+    // TODO: after UP/DOWN make the transition to IDLE a bit longer - for extra safety
     work_relays_off();
   }
 }
@@ -144,7 +162,7 @@ void _timer_cb_A_after_relays_off_and_schedule_up(bool is_done) {
 
     // set to final state to allow taking an emergency command to stop
     work_state = STATE_UP;
-#if defined(SERIAL_DEBUG_WORK)
+#if defined(SERIAL_DEBUG_WORK_LED)
     digitalWrite(ledPin, HIGH);
 #endif
     set_relay_UP_on();
@@ -159,6 +177,7 @@ void _timer_cb_A_after_relays_off_and_schedule_up(bool is_done) {
     const int16_t recurrence = 144; // 289
     const int8_t err_code = timer1.scheduleBRecurrent(delay_ms, recurrence, &_timer_cb_B_after_schedule_up_or_down);
     if (err_code != Timer1Helper::ER_OK) {
+      work_emergency_all_off_and_reset();
 #if defined(SERIAL_DEBUG_WORK)
       Serial.print("ERR:up2:");
       Serial.println(err_code);
@@ -186,7 +205,7 @@ void work_relays_up() {
 
   // call first a routine to make sure all relays are in the off state
   // then issue the actual up command
-#if defined(SERIAL_DEBUG_WORK)
+#if defined(SERIAL_DEBUG_WORK_LED)
   digitalWrite(ledPin, LOW);
 #endif
   set_relay_ALL_off();
@@ -196,6 +215,7 @@ void work_relays_up() {
   const int16_t recurrence = 8;
   const int8_t err_code = timer1.scheduleARecurrent(delay_ms, recurrence, &_timer_cb_A_after_relays_off_and_schedule_up);
   if (err_code != Timer1Helper::ER_OK) {
+    work_emergency_all_off_and_reset();
 #if defined(SERIAL_DEBUG_WORK)
     Serial.print("ERR:up1:");
     Serial.println(err_code);
@@ -212,7 +232,7 @@ void _timer_cb_A_after_relays_off_and_schedule_down(bool is_done) {
 
     // set to final state to allow taking an emergency command to stop
     work_state = STATE_DOWN;
-#if defined(SERIAL_DEBUG_WORK)
+#if defined(SERIAL_DEBUG_WORK_LED)
     digitalWrite(ledPin, HIGH);
 #endif
     set_relay_DOWN_on();
@@ -227,6 +247,7 @@ void _timer_cb_A_after_relays_off_and_schedule_down(bool is_done) {
     const int16_t recurrence = 144; // 289
     const int8_t err_code = timer1.scheduleBRecurrent(delay_ms, recurrence, &_timer_cb_B_after_schedule_up_or_down);
     if (err_code != Timer1Helper::ER_OK) {
+      work_emergency_all_off_and_reset();
 #if defined(SERIAL_DEBUG_WORK)
       Serial.print("ERR:dw2:");
       Serial.println(err_code);
@@ -254,7 +275,7 @@ void work_relays_down() {
 
   // call first a routine to make sure all relays are in the off state
   // then issue the actual down command
-#if defined(SERIAL_DEBUG_WORK)
+#if defined(SERIAL_DEBUG_WORK_LED)
   digitalWrite(ledPin, LOW);
 #endif
   set_relay_ALL_off();
@@ -264,6 +285,7 @@ void work_relays_down() {
   const int16_t recurrence = 8;
   const int8_t err_code = timer1.scheduleARecurrent(delay_ms, recurrence, &_timer_cb_A_after_relays_off_and_schedule_down);
   if (err_code != Timer1Helper::ER_OK) {
+    work_emergency_all_off_and_reset();
 #if defined(SERIAL_DEBUG_WORK)
     Serial.print("ERR:dw1:");
     Serial.println(err_code);
@@ -427,19 +449,57 @@ void setup_remctrl_input() {
 //
  
 void setup() {
-#if defined(SERIAL_DEBUG_WORK)
-  pinMode(ledPin, OUTPUT); // TODO: delete/change, only for testing
-#endif
-  pinMode(relay1, OUTPUT);
-  pinMode(relay2, OUTPUT);
-  pinMode(relay3, OUTPUT);
-  pinMode(relay4, OUTPUT);
+  //
+  // minimal power optimizations - as per https://www.gammon.com.au/power
+  //
+  A5
+  // disable ADC
+  ADCSRA = 0;
+
+  // turn off various modules
+  power_adc_disable();
+  power_spi_disable();
+  power_usart0_disable();
+  //power_timer0_disable(); // TIMER0 - needed for us, apparently
+  //power_timer1_disable(); // TIMER1 - definitely needed (Timer1Helper is based on it)
+  power_timer2_disable();
+  power_twi_disable();
+  // NOTE: You must use the PRR after setting ADCSRA to zero, otherwise the ADC is "frozen" in an active state.
+
+  // SLEEP_MODE_PWR_DOWN - nothing works
+  // SLEEP_MODE_STANDBY - nothing works
+  // SLEEP_MODE_EXT_STANDBY - nothing works
+  // SLEEP_MODE_PWR_SAVE - nothing works
+  // SLEEP_MODE_ADC - nothing works
+  set_sleep_mode(SLEEP_MODE_IDLE);
+  cli(); // CLear Interrupts
+
+  sleep_enable();
+
+  // turn off brown-out enable in software
+  MCUCR = bit (BODS) | bit (BODSE);
+  MCUCR = bit (BODS);
+
+  sei(); // SEt Interrupts - guarantees that next instruction executed
+  sleep_cpu(); // sleep within 3 clock cycles of above
+
+  //
+  // our own setup
+  //
+
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW);
+
+  pinMode(PIN_OUT_DIG08_RELAY1, OUTPUT);
+  pinMode(PIN_OUT_DIG09_RELAY2, OUTPUT);
+  pinMode(PIN_OUT_DIG10_RELAY3, OUTPUT);
+  pinMode(PIN_OUT_DIG11_RELAY4, OUTPUT);
 
 #if defined(SERIAL_DEBUG_INPUT) || defined(SERIAL_DEBUG_WORK)
   Serial.begin(9600);
 #endif
 
-  timer1.reset(); // clean before
+  timer1.reset();
 
   setup_remctrl_input();
 
