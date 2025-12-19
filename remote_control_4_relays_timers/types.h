@@ -1,12 +1,16 @@
 
 enum work_state_t : byte {
+  /**
+   * "stable" states
+   */
   STATE_INVALID = 0,
   STATE_IDLE,
   STATE_UP,
   STATE_DOWN,
   /**
-   * currently changing state; cannot take another command;
-   * this also helps in preventing button de-bounce 
+   * "transition" state
+   * when in this state, logic will discard an input command (also
+   * helps in preventing button de-bounce because)
    */
   STATE_CHANGING
 };

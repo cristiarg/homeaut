@@ -10,6 +10,7 @@
 //#define SERIAL_DEBUG_INPUT
 //#define SERIAL_DEBUG_WORK
 //#define SERIAL_DEBUG_WORK_LED
+//#define SERIAL_DEBUG_MEASURE_DELAY
 
 static Timer1Helper timer1;
  
@@ -17,11 +18,29 @@ static Timer1Helper timer1;
 // the actual work to be done
 //
 
+/**
+ * the global work state; every action and transition revolves around this;
+ * approx state machine:
+ * 
+ *  ┌──────────────────────────┬────────────────────────────┐
+ *  │(error)                   │                     (error)│
+ *  │             comm DOWN    ▼      comm UP               │
+ *  │          ┌──────────────INVALID────────────────┐      │
+ *  │          ▼               │                     ▼      │
+ *  │    force relays          │             force relays   │
+ *  │       to OFF             │                to OFF      │
+ *  │          │               │                     │      │
+ *  │          │(short wait)   │        (short delay)│      │
+ *  │          ▼               │                     ▼      │
+ *  └─────────DOWN             │                    UP──────┘
+ *             │               │                     │       
+ *             │(specific      │           (specific │       
+ *             │  delay)       ▼             delay)  │       
+ *             └────────────► IDLE ◄─────────────────┘       
+ */
 volatile work_state_t work_state = STATE_INVALID;
 
-//#if defined(SERIAL_DEBUG_WORK_LED)
-static const uint8_t ledPin = 13; // TODO: delete, only for testing
-//#endif
+static const uint8_t PIN_OUT_DIG13_LED = 13; // TODO: delete, only for testing
 
 // output relays pins
 static const uint8_t PIN_OUT_DIG08_RELAY1 = 8;
@@ -125,7 +144,7 @@ void work_relays_off() {
   // stop relays and allow some timeout for actual switching before
   // setting the proper idle state to allow considering another command
 #if defined(SERIAL_DEBUG_WORK_LED)
-  digitalWrite(ledPin, LOW);
+  digitalWrite(PIN_OUT_DIG13_LED, LOW);
 #endif
   set_relay_ALL_off();
 
@@ -141,12 +160,20 @@ void work_relays_off() {
   }
 }
 
+#if defined(SERIAL_DEBUG_MEASURE_DELAY)
+volatile unsigned long start_up;
+#endif
 /**
  * callback after commanding the relays to UP/DOWN, command to bring the state to IDLE by setting all relays to OFF
  */
 void _timer_cb_B_after_schedule_up_or_down(bool is_done) {
   if (is_done) {
     timer1.resetB();
+
+#if defined(SERIAL_DEBUG_MEASURE_DELAY)
+    Serial.print("WK:temp:");
+    Serial.println((unsigned long)(millis() - start_up));
+#endif
 
     // TODO: after UP/DOWN make the transition to IDLE a bit longer - for extra safety
     work_relays_off();
@@ -163,7 +190,7 @@ void _timer_cb_A_after_relays_off_and_schedule_up(bool is_done) {
     // set to final state to allow taking an emergency command to stop
     work_state = STATE_UP;
 #if defined(SERIAL_DEBUG_WORK_LED)
-    digitalWrite(ledPin, HIGH);
+    digitalWrite(PIN_OUT_DIG13_LED, HIGH);
 #endif
     set_relay_UP_on();
 
@@ -173,8 +200,15 @@ void _timer_cb_A_after_relays_off_and_schedule_up(bool is_done) {
 #endif
 
     timer1.resetB();
+#if defined(SERIAL_DEBUG_MEASURE_DELAY)
+    start_up = millis();
+#endif
+    // actually, there is a bug in the Timer1Helper class - or in the way I understood
+    // to implement the class in which, upon schduling the timer, the callback routine
+    // is fired right away - even if I took all precautions to disable the respective
+    // comparer of TIMER1; thus, the timeouts below account for this -1 recurrence
     const uint32_t delay_ms = 50;
-    const int16_t recurrence = 144; // 289
+    const int16_t recurrence = 290;
     const int8_t err_code = timer1.scheduleBRecurrent(delay_ms, recurrence, &_timer_cb_B_after_schedule_up_or_down);
     if (err_code != Timer1Helper::ER_OK) {
       work_emergency_all_off_and_reset();
@@ -206,7 +240,7 @@ void work_relays_up() {
   // call first a routine to make sure all relays are in the off state
   // then issue the actual up command
 #if defined(SERIAL_DEBUG_WORK_LED)
-  digitalWrite(ledPin, LOW);
+  digitalWrite(PIN_OUT_DIG13_LED, LOW);
 #endif
   set_relay_ALL_off();
 
@@ -233,7 +267,7 @@ void _timer_cb_A_after_relays_off_and_schedule_down(bool is_done) {
     // set to final state to allow taking an emergency command to stop
     work_state = STATE_DOWN;
 #if defined(SERIAL_DEBUG_WORK_LED)
-    digitalWrite(ledPin, HIGH);
+    digitalWrite(PIN_OUT_DIG13_LED, HIGH);
 #endif
     set_relay_DOWN_on();
 
@@ -243,8 +277,11 @@ void _timer_cb_A_after_relays_off_and_schedule_down(bool is_done) {
 #endif
 
     timer1.resetB();
+#if defined(SERIAL_DEBUG_MEASURE_DELAY)
+    start_up = millis();    
+#endif
     const uint32_t delay_ms = 50;
-    const int16_t recurrence = 144; // 289
+    const int16_t recurrence = 290;
     const int8_t err_code = timer1.scheduleBRecurrent(delay_ms, recurrence, &_timer_cb_B_after_schedule_up_or_down);
     if (err_code != Timer1Helper::ER_OK) {
       work_emergency_all_off_and_reset();
@@ -276,7 +313,7 @@ void work_relays_down() {
   // call first a routine to make sure all relays are in the off state
   // then issue the actual down command
 #if defined(SERIAL_DEBUG_WORK_LED)
-  digitalWrite(ledPin, LOW);
+  digitalWrite(PIN_OUT_DIG13_LED, LOW);
 #endif
   set_relay_ALL_off();
 
@@ -294,26 +331,30 @@ void work_relays_down() {
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-// mechanism to force a non-zero interval between any commands
+// mechanism to force a non-zero interval between any commands considered
 // handled from the input remote control
 //
 
-// volatile because it is accessed from an interrupt handler
-volatile unsigned long lastToggleTime = 0;
-const unsigned long DEBOUNCE_DELAY = 200;
+volatile unsigned long lastToggleTime = 0; // volatile because it is accessed from an interrupt handler
+const unsigned long DEBOUNCE_DELAY_MS = 200;
 
 // update when the most recent command has been validly handled
 void last_command_update(unsigned long ms_now) {
   lastToggleTime = ms_now;
 }
 
-// introduce a minimum "debounce" delay between commands to reduce possible noice
-// NOTE: I think this is related to how the button levels of the remote translate
-// to input pin levels; in practice this works well enough and avoids "noise" (ie: very
-// quick on-offs of the output which could cause mechanical failures in the output relays)
+/**
+ * introduce a minimum "debounce" delay between commands to reduce possible noice
+ * NOTE:
+ *  - I think this is related to how the button levels of the remote translate
+ *  to input pin levels; in practice this works well enough and avoids "noise" (ie: very
+ *  quick on-offs of the output which could cause mechanical failures in the output relays)
+ *  - This mechanism is additional to the STATE_CHANGING transient state during which the
+ *  logic does "not" accept additional commands 
+ */
 bool last_command_can_handle(unsigned long millis_now) {
   return (lastToggleTime == 0)
-      || ((millis_now - lastToggleTime) > DEBOUNCE_DELAY)
+      || ((millis_now - lastToggleTime) > DEBOUNCE_DELAY_MS)
       || ((long)(millis_now - lastToggleTime) < 0);
 }
 
@@ -321,16 +362,16 @@ bool last_command_can_handle(unsigned long millis_now) {
 // Interrupt Service Request for port D pins (input from remote module)
 //
 
-const byte remctrl_portD2 = 2; // remote button C - STOP
-const byte remctrl_portD3 = 3; // remote button A - STOP
-const byte remctrl_portD4 = 4; // remote button D - DOWN
-const byte remctrl_portD5 = 5; // remote button B - UP
+static const uint8_t PIN_IN_DIG02_REMOTE_C = 2; // remote button C - STOP
+static const uint8_t PIN_IN_DIG03_REMOTE_A = 3; // remote button A - STOP
+static const uint8_t PIN_IN_DIG04_REMOTE_D = 4; // remote button D - DOWN
+static const uint8_t PIN_IN_DIG05_REMOTE_B = 5; // remote button B - UP
 
 volatile remctrl_command_t remctrl_command = COMMAND_NA;
 
 remctrl_command_t remctrl_get_command() {
   // for safety, check the stop buttons first
-  if (digitalRead(remctrl_portD2) == HIGH) {
+  if (digitalRead(PIN_IN_DIG02_REMOTE_C) == HIGH) {
 #if defined(SERIAL_DEBUG_INPUT)
     // log: (port pin that sourced action)-(remote control button letter)-(consequential command)
     // these all have to correspond in order to not make any mistakes in wiring, logic, ..
@@ -339,21 +380,21 @@ remctrl_command_t remctrl_get_command() {
     return COMMAND_STOP;
   }
 
-  if (digitalRead(remctrl_portD3) == HIGH) {
+  if (digitalRead(PIN_IN_DIG03_REMOTE_A) == HIGH) {
 #if defined(SERIAL_DEBUG_INPUT)
     Serial.println("RM:d3-A-ST");
 #endif
     return COMMAND_STOP;
   }
 
-  if (digitalRead(remctrl_portD4) == HIGH) {
+  if (digitalRead(PIN_IN_DIG04_REMOTE_D) == HIGH) {
 #if defined(SERIAL_DEBUG_INPUT)
     Serial.println("RM:d4-D-DW");
 #endif
     return COMMAND_DOWN;
   }
 
-  if (digitalRead(remctrl_portD5) == HIGH) {
+  if (digitalRead(PIN_IN_DIG05_REMOTE_B) == HIGH) {
 #if defined(SERIAL_DEBUG_INPUT)
     Serial.println("RM:d5-B-UP");
 #endif
@@ -366,9 +407,9 @@ remctrl_command_t remctrl_get_command() {
 
 // interruput service request for port D (pins D0 - D7)
 ISR(PCINT2_vect) {
-  //const unsigned long millis_now = millis();
-  //if (last_command_can_handle(millis_now))
-  //{
+  const unsigned long millis_now = millis();
+  if (last_command_can_handle(millis_now))
+  {
     const remctrl_command_t comm = remctrl_get_command();
 
     switch(work_state) {
@@ -415,22 +456,22 @@ ISR(PCINT2_vect) {
     }
     // timer1_setup_start_compA_500ms();
 
-    //last_command_update(millis_now);
-  //}
+    last_command_update(millis_now);
+  }
 }
 
 void setup_remctrl_input() {
   // Set switch pin as INPUT with pullup
 #if 0
-  pinMode(remctrl_portD2, INPUT_PULLUP);
-  pinMode(remctrl_portD3, INPUT_PULLUP);
-  pinMode(remctrl_portD4, INPUT_PULLUP);
-  pinMode(remctrl_portD5, INPUT_PULLUP);
+  pinMode(PIN_IN_DIG02_REMOTE_C, INPUT_PULLUP);
+  pinMode(PIN_IN_DIG03_REMOTE_A, INPUT_PULLUP);
+  pinMode(PIN_IN_DIG04_REMOTE_D, INPUT_PULLUP);
+  pinMode(PIN_IN_DIG05_REMOTE_B, INPUT_PULLUP);
 #else
-  pinMode(remctrl_portD2, INPUT);
-  pinMode(remctrl_portD3, INPUT);
-  pinMode(remctrl_portD4, INPUT);
-  pinMode(remctrl_portD5, INPUT);
+  pinMode(PIN_IN_DIG02_REMOTE_C, INPUT);
+  pinMode(PIN_IN_DIG03_REMOTE_A, INPUT);
+  pinMode(PIN_IN_DIG04_REMOTE_D, INPUT);
+  pinMode(PIN_IN_DIG05_REMOTE_B, INPUT);
 #endif
 
   // working mode: pin change interrupts
@@ -452,14 +493,23 @@ void setup() {
   //
   // minimal power optimizations - as per https://www.gammon.com.au/power
   //
-  A5
+
   // disable ADC
   ADCSRA = 0;
+
+  // set pins as output and low for minimal power consumption
+  for (byte i = 0; i <= A5; ++i) {
+    pinMode(i, OUTPUT);
+    digitalWrite(i, LOW);
+  }
 
   // turn off various modules
   power_adc_disable();
   power_spi_disable();
+#if (!defined(SERIAL_DEBUG_INPUT) && !defined(SERIAL_DEBUG_WORK) && !defined(SERIAL_DEBUG_MEASURE_DELAY))
+  // when not using serial debug, the serial module ca
   power_usart0_disable();
+#endif
   //power_timer0_disable(); // TIMER0 - needed for us, apparently
   //power_timer1_disable(); // TIMER1 - definitely needed (Timer1Helper is based on it)
   power_timer2_disable();
@@ -487,15 +537,15 @@ void setup() {
   // our own setup
   //
 
-  pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, LOW);
+  pinMode(PIN_OUT_DIG13_LED, OUTPUT);
+  digitalWrite(PIN_OUT_DIG13_LED, LOW);
 
   pinMode(PIN_OUT_DIG08_RELAY1, OUTPUT);
   pinMode(PIN_OUT_DIG09_RELAY2, OUTPUT);
   pinMode(PIN_OUT_DIG10_RELAY3, OUTPUT);
   pinMode(PIN_OUT_DIG11_RELAY4, OUTPUT);
 
-#if defined(SERIAL_DEBUG_INPUT) || defined(SERIAL_DEBUG_WORK)
+#if defined(SERIAL_DEBUG_INPUT) || defined(SERIAL_DEBUG_WORK) || defined(SERIAL_DEBUG_MEASURE_DELAY)
   Serial.begin(9600);
 #endif
 
@@ -503,7 +553,7 @@ void setup() {
 
   setup_remctrl_input();
 
-#if defined(SERIAL_DEBUG_INPUT) || defined(SERIAL_DEBUG_WORK)
+#if defined(SERIAL_DEBUG_INPUT) || defined(SERIAL_DEBUG_WORK) || defined(SERIAL_DEBUG_MEASURE_DELAY)
   Serial.println("init");
 #endif
 
